@@ -23,10 +23,13 @@ using static Networking;
 using static Utils;
 public static partial class Networking
 {
+    public interface IRelayServerHandlers
+    {
+        void FailHandle(NetException ex);
+    }
     public enum RelayMessage
     {
         RELAY_BEFORE_FIRST = MessageType.MESAGE_TYPE_AFTER_LAST,
-
         RELAY_LOGIN_ADMIN,
         RELAY_LOGIN_CLIENT,
         RELAY_NOTIFY_LOGIN,
@@ -84,7 +87,7 @@ public static partial class Networking
         public bool isadmin;
     }
     [StructLayout(LayoutKind.Sequential)]
-    struct MStatus
+    public struct MStatus
     {
         public bool isadmin;
         public bool islogged;
@@ -95,9 +98,9 @@ public static partial class Networking
         public long ID;
     }
 
-    class RelayServer : Peer
+    public class RelayServer : Peer
     {
-        Action<NetException> _failHandle;
+        IRelayServerHandlers _handlers;
         Connection _adminConnection;
         List<Connection> _loggedIn = new List<Connection>();
         string _adminPassword;
@@ -357,16 +360,16 @@ public static partial class Networking
         protected override void OnFailure(NetException ex)
         {
             FailureShutdown();
-            _failHandle(ex);
+            _handlers.FailHandle(ex);
         }
         protected override void OnLog(string msg, Severity s)
         {
             Console.WriteLine(s.ToString() + ": " + msg);
         }
 
-        public RelayServer(ushort port, Action<NetException> _failHandle, string adminpassword, string clientpassword, bool start = false) : base(port, false)
+        public RelayServer(IRelayServerHandlers handlers, ushort port, string adminpassword, string clientpassword, bool start = false) : base(port, false)
         {
-            this._failHandle = _failHandle;
+            this._handlers = handlers;
             this._adminPassword = adminpassword;
             this._clientPassword = clientpassword;
             this.ID = ID_RELAY;

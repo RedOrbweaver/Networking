@@ -18,21 +18,25 @@ using static System.Math;
 using static Utils;
 public static partial class Networking
 {
-    class RelayClient : Peer
+    public interface IRelayClientHandlers
     {
-        Action<NetException> _failHandle;
-        Action<Message> _onReceived;
-        System.Action _onLoginFailure;
-        Action<Connection> _onLoginSuccess;
-        Action<Connection, bool> _onPeerDiscovered;
-        Action<Connection, DisconnectReason> _onDisconnect;
-        Action<MStatus> _onStatus;
+        void FailHandle(NetException ex);
+        void OnReceived(Message msg);
+        void OnLoginFailure();
+        void OnLoginSuccess(Peer.Connection con);
+        void OnPeerDiscovered(Peer.Connection con, bool isadmin);
+        void OnDisconnect(Peer.Connection con, DisconnectReason reason);
+        void OnStatus(MStatus stat);
+    }
+    public class RelayClient : Peer
+    {
         Connection _relayConnection;
         Connection _admin;
         List<Connection> _knownLoggedIn = new List<Connection>();
         List<Connection> _fellowUsers = new List<Connection>();
         string _password;
         bool _wantsAdmin;
+        IRelayClientHandlers _handlers;
         public IPEndPoint RelayEndpoint { get; protected set; }
         public bool IsAdmin { get; protected set; } = false;
         public bool IsLoggedIn { get; protected set; } = false;
@@ -84,12 +88,12 @@ public static partial class Networking
                                 this.ID = m.newid;
                                 LogEvent($"Logged in {(m.isadmin ? "as admin" : "as client")}", Severity.INFO);
                                 IsLoggedIn = true;
-                                _onLoginSuccess(con);
+                                _handlers.OnLoginSuccess(con);
                             }
                             else
                             {
                                 LogEvent("Failed to log in!", Severity.FAIL);
-                                _onLoginFailure();
+                                _handlers.OnLoginFailure();
                             }
                             break;
                         }
@@ -126,7 +130,7 @@ public static partial class Networking
                                 LogEvent($"New peer: {m.id}", Severity.INFO);
                                 _fellowUsers.Add(ncon);
                             }
-                            _onPeerDiscovered(ncon, m.isadmin);
+                            _handlers.OnPeerDiscovered(ncon, m.isadmin);
                             break;
                         }
                     case RelayMessage.RELAY_GET_MY_STATUS:
@@ -140,8 +144,7 @@ public static partial class Networking
                             NetAssert(m.isadmin == IsAdmin);
                             NetAssert(m.islogged == IsLoggedIn);
                             LogEvent($"Status received. IsLogged: {m.islogged} IsAdmin: {m.isadmin}", Severity.INFO);
-                            if (_onStatus != null)
-                                _onStatus(m);
+                            _handlers.OnStatus(m);
                             break;
                         }
                     default:
@@ -163,14 +166,13 @@ public static partial class Networking
                 return base.ProcessMessage(source, msg, con);
             if (msg.MType > (int)RelayMessage.RELAY_BEFORE_FIRST && msg.MType < (int)RelayMessage.RELAY_AFTER_LAST)
                 return ProcessRelayClientMessage(msg, con);
-
-            _onReceived(msg);
+            _handlers.OnReceived(msg);
             return MessageReaction.ACCEPTED;
         }
         protected override void OnFailure(NetException ex)
         {
             FailureShutdown();
-            _failHandle(ex);
+            _handlers.FailHandle(ex);
         }
         protected override void OnLog(string msg, Severity s)
         {
@@ -182,7 +184,7 @@ public static partial class Networking
             false, new MLogin() { password = password }),
                 (sm) =>  // fail 
                 {
-                    _onLoginFailure();
+                    _handlers.OnLoginFailure();
                 },
                 (sm) =>  // success 
                 {
@@ -201,12 +203,13 @@ public static partial class Networking
             base.Start();
             ConnectToServer(RelayEndpoint);
         }
-        public RelayClient(IPEndPoint relayserver, ushort myport, string password, bool isadmin, bool start = false) : base(myport, false)
+        public RelayClient(IPEndPoint relayserver, ushort myport, string password, bool isadmin, IRelayClientHandlers handles, bool start = false) : base(myport, false)
         {
             this._password = password;
             this._wantsAdmin = isadmin;
             this.RelayEndpoint = relayserver;
             this.Port = myport;
+            this._handlers = handles;
             if (start)
             {
                 Start();
