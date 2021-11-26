@@ -85,7 +85,9 @@ public static partial class Networking
             {
                 UpdatePacketLoss();
                 var sincelast = DateTime.Now - LastUpdate;
+                #if DISABLE_TIMEOUTS
                 Assert<NetConnectionTimeoutException>(sincelast.TotalMilliseconds < CONNECTION_TIMEOUT_MS);
+                #endif
                 Assert<NetConnectionDDOSException>(_messagesThisMinute < MAX_MESSAGES_PER_MINUTE);
                 Assert<NetConnectionDDOSException>(_messagesThisSecond < MAX_MESSAGES_PER_SECOND);
                 Assert<NetConnectionInsaneException>(TotalErrorous < MAX_ERROROUS);
@@ -149,7 +151,7 @@ public static partial class Networking
                 _packetLossCount.Enqueue(false);
                 UpdateConnectionStatus();
             }
-            long _idCounter = 1;
+            long _idCounter = 0;
             public long GenerateMessageID()
             {
                 return _idCounter++;

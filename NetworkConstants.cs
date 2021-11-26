@@ -45,4 +45,6 @@ public static partial class Networking
     public const int ID_ALL = -2;
     public const int ID_UNKNOWN = -3;
     public const int MSG_ID_NO_CONNECTION = -1;
+    public const int INTER_RELAY_NAMESPACE_START = 666;
+    public const int INTER_RELAY_NAMESPACE_END = INTER_RELAY_NAMESPACE_START+10000;
 }

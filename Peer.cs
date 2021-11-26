@@ -1,4 +1,13 @@
-﻿using System;
+﻿#define DISABLE_TIMEOUTS
+//#define ASSERT_NET_WARNINGS
+#define ASSERT_NET_ERRORS
+#define ASSERT_NET_FATALS
+#define LOG_EVERYTHING
+using System.Data.Common;
+
+using System.Resources;
+using System.Xml.Schema;
+using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel.DataAnnotations;
@@ -38,13 +47,14 @@ public static partial class Networking
         public class SentMessage
         {
             public long ID => Msg.MessageID;
-            public IPEndPoint EndpointOverride = null;
+            public IPEndPoint Endpoint;
+            public bool FailedAtLeastOnce;
             public bool RequestReturn;
             public DateTime Time;
             public DateTime LastTime;
             public Message Msg;
-            public int Retries;
-            public int Timeout;
+            public int Retries = UNIMPORTANT_RETRIES;
+            public int Timeout = DEFAULT_TIMEOUT;
             public Action<SentMessage> OnFailure;
             public Action<SentMessage> OnSuccess;
         }
@@ -89,6 +99,7 @@ public static partial class Networking
         System.Threading.Thread _mainThread;
         protected Dictionary<int, List<Action<Message>>> _handles = new Dictionary<int, List<Action<Message>>>();
         protected Dictionary<long, long> AlternativeAddresses = new Dictionary<long, long>();
+        object _receiveProcessMX = new object();
         long _peerIdCounter = 1;
         long GeneratePeerID()
         {
@@ -108,40 +119,86 @@ public static partial class Networking
             FAIL,
         }
         object _logMX = new object();
-
-        protected virtual void OnSend(Message msg, bool requestreturn)
+        protected IPEndPoint GetEndpointForID(long ID, bool allowall = true, bool allowfail = false)
+        {
+            if(ID == ID_ALL)
+            {
+                Assert(allowall);
+                return null;
+            }
+            if(ID == ID_UNKNOWN)
+            {
+                if(DefaultEndpoint == null)
+                {
+                    Assert(allowfail);
+                    return null;
+                }
+                return DefaultEndpoint;
+            }
+            if(!ConnectionsByID.ContainsKey(ID))
+            {
+                Assert(allowfail);
+                return null;
+            }
+            return ConnectionsByID[ID].Endpoint;
+        }
+        protected virtual void OnQueueSend(Message msg, bool requestreturn)
         {
             if (requestreturn && ConnectionsByID.ContainsKey(msg.ReceiverID))
             {
                 ConnectionsByID[msg.ReceiverID].NoteMessageSent();
             }
         }
-        protected void QueueSendMessage(SentMessage msg)
+        protected void QueueSendMessage(SentMessage smsg)
         {
+            Assert(smsg.Endpoint != null || smsg.Msg.ReceiverID == ID_ALL);
+            smsg.Msg.RequestConfirmation = smsg.RequestReturn;
             lock (_toSend)
             {
-                _toSend.Append(msg);
+                _toSend.Enqueue(smsg);
                 _sendEvent.Set();
+            }
+            lock(_sentMessages)
+            {
+                if(smsg.RequestReturn && !_sentMessages.Contains(smsg))
+                {
+                    _sentMessages.Add(smsg);
+                }
             }
         }
         protected void QueueSendMessage(Message msg, bool requestreturn)
         {
-            OnSend(msg, requestreturn);
+            Assert(ConnectionsByID.ContainsKey(msg.ReceiverID));
             QueueSendMessage(new SentMessage()
             {
+                Endpoint = ConnectionsByID[msg.ReceiverID].Endpoint,
                 RequestReturn = requestreturn,
                 Msg = msg,
                 Time = DateTime.Now,
                 LastTime = DateTime.Now,
             });
+            OnQueueSend(msg, requestreturn);
         }
-        protected void QueueSendMessage(Message msg, Action<SentMessage> failhandle,
+        protected void QueueSendMessage(IPEndPoint end, Message msg, bool requestreturn)
+        {
+            QueueSendMessage(new SentMessage()
+            {
+                Endpoint = end,
+                RequestReturn = requestreturn,
+                Msg = msg,
+                Time = DateTime.Now,
+                LastTime = DateTime.Now,
+            });
+            OnQueueSend(msg, requestreturn);
+        }
+        protected void QueueSendMessage(IPEndPoint end, Message msg, Action<SentMessage> failhandle,
             Action<SentMessage> successhandle, int responsetimeoutms = DEFAULT_TIMEOUT, int retries = 0)
         {
             Assert(failhandle != null);
-            OnSend(msg, true);
+            Assert(end != null || msg.ReceiverID == ID_ALL);
             QueueSendMessage(new SentMessage()
             {
+                Endpoint = end,
                 RequestReturn = true,
                 Msg = msg,
                 Time = DateTime.Now,
@@ -151,6 +208,13 @@ public static partial class Networking
                 OnFailure = failhandle,
                 OnSuccess = successhandle,
             });
+            OnQueueSend(msg, true);
+        }
+        protected void QueueSendMessage(Message msg, Action<SentMessage> failhandle,
+            Action<SentMessage> successhandle, int responsetimeoutms = DEFAULT_TIMEOUT, int retries = 0)
+        {
+            QueueSendMessage(GetEndpointForID(msg.ReceiverID), msg, failhandle, successhandle, responsetimeoutms, retries);
+            OnQueueSend(msg, true);
         }
         protected void QueueSendMessage(Message msg, Action<SentMessage> failhandle,
             int responsetimeoutms = DEFAULT_TIMEOUT, int retries = 0)
@@ -158,19 +222,6 @@ public static partial class Networking
             QueueSendMessage(msg, failhandle, null, responsetimeoutms, retries);
         }
 
-        void QueueReceivedMessage(IPEndPoint endpoint, Message msg)
-        {
-            lock (_toReceive)
-            {
-                _toReceive.Append(new ReceivedMessage()
-                {
-                    Msg = msg,
-                    Endpoint = endpoint,
-                    Time = DateTime.Now,
-                });
-                _recvEvent.Set();
-            }
-        }
         protected byte[] DecryptData(IPEndPoint ip, byte[] dt)
         {
             return dt.ToArray();
@@ -179,7 +230,19 @@ public static partial class Networking
         {
             return dt.ToArray();
         }
-        object _receiveProcessMX = new object();
+        void QueueReceivedMessage(IPEndPoint endpoint, Message msg)
+        {
+            lock (_toReceive)
+            {
+                _toReceive.Enqueue(new ReceivedMessage()
+                {
+                    Msg = msg,
+                    Endpoint = endpoint,
+                    Time = DateTime.Now,
+                });
+                _recvEvent.Set();
+            }
+        }
         void ReceiveLoop()
         {
             while (!_shutdown)
@@ -237,21 +300,15 @@ public static partial class Networking
                 var msg = smsg.Msg;
                 msg.RequestConfirmation = smsg.RequestReturn;
                 byte[] dt = Message.Serialize(msg);
-                if (msg.ReceiverID == ID_UNKNOWN)
+                if (msg.ReceiverID == ID_ALL)
                 {
-                    lock (DefaultEndpoint)
-                    {
-                        Assert(DefaultEndpoint != null, "Sending to ID_UNKNOWN without setting a DefaultEndpoint");
-                        SendMessage(DefaultEndpoint, ID_UNKNOWN, dt, false);
-                    }
-                }
-                else if (msg.ReceiverID == ID_ALL)
                     Connections.ForEach(con => SendMessage(con.Endpoint, con.ID, dt, msg.Encrypted));
+                }
                 else
                 {
-                    NetAssert(ConnectionsByID.ContainsKey(msg.ReceiverID), "Attempting to message a host that does not exist");
-                    Connection con = ConnectionsByID[msg.ReceiverID];
-                    SendMessage(con.Endpoint, con.ID, dt, msg.Encrypted);
+                    IPEndPoint endpoint = smsg.Endpoint;
+                    NetAssert(endpoint != null, "Attempting to send a message to null endpoint");
+                    SendMessage(endpoint, msg.ReceiverID, dt, msg.Encrypted);
                 }
             }
         }
@@ -264,12 +321,12 @@ public static partial class Networking
                 {
                     Echo(it, (SentMessage sm) =>
                     {
-                        DisconnectConnection(it, DisconnectReason.TIMEOUT);
+                        DisconnectConnection(it, DisconnectReason.TIMEOUT, true);
                     }, AUTO_ECHO_TIMEOUT, IMPORTANT_RETRIES);
                 }
                 if ((now - it.LastUpdate).TotalMilliseconds > FORCED_DISCONNECT_TIMEOUT)
                 {
-                    DisconnectConnection(it, DisconnectReason.TIMEOUT);
+                    DisconnectConnection(it, DisconnectReason.TIMEOUT, true);
                     continue;
                 }
                 var toexec = new List<(ReceivedMessage rmsg, DateTime rtime)>();
@@ -288,7 +345,7 @@ public static partial class Networking
                         it.DelayedMessages.Remove(dm);
                         lock (_toReceive)
                         {
-                            _toReceive.Append(dm.rmsg);
+                            _toReceive.Enqueue(dm.rmsg);
                         }
                     }
                     lock (_toReceive)
@@ -303,7 +360,7 @@ public static partial class Networking
         }
         protected void Echo(Connection con, Action<SentMessage> failhandle = null, int timeout = DEFAULT_TIMEOUT, int retries = 0)
         {
-            var msg = Message.BasicMessage(con.GenerateMessageID(), con.ID, ID, (int)MessageType.MSG_ECHO, false);
+            var msg = Message.BasicMessage(con.GenerateMessageID(), ID, con.ID, (int)MessageType.MSG_ECHO, true, false);
             QueueSendMessage(msg,
             (sm) =>
             {
@@ -313,7 +370,9 @@ public static partial class Networking
             },
             (sm) =>
             {
+                #if LOG_ECHOES
                 LogEvent($"Echo from {sm.Msg.ReceiverID} tm: {(DateTime.Now - sm.Time).Milliseconds}ms", Severity.INFO);
+                #endif
             }, timeout, retries);
         }
         protected void PotentialConnectionFailureOperation(Connection con, System.Action operation)
@@ -324,24 +383,28 @@ public static partial class Networking
             }
             catch (NetConnectionTimeoutException)
             {
-                DisconnectConnection(con, DisconnectReason.TIMEOUT);
+                DisconnectConnection(con, DisconnectReason.TIMEOUT, true);
             }
             catch (NetConnectionInsaneException)
             {
-                DisconnectConnection(con, DisconnectReason.INSANITY);
+                DisconnectConnection(con, DisconnectReason.INSANITY, true);
             }
             catch (NetConnectionDDOSException)
             {
-                DisconnectConnection(con, DisconnectReason.DDOS);
+                bool b = false;
+                #if DEBUG
+                b = true;
+                #endif
+                DisconnectConnection(con, DisconnectReason.DDOS, b);
             }
             catch (NetConnectionBrokenException)
             {
-                DisconnectConnection(con, DisconnectReason.INSANITY);
+                DisconnectConnection(con, DisconnectReason.INSANITY, true);
             }
         }
         bool MaybeDelay(ReceivedMessage rmsg, Connection con)
         {
-            if (con.LastID + 1 < rmsg.Msg.MessageID)
+            if (con.LastID > 1 && con.LastID + 1 < rmsg.Msg.MessageID)
             {
                 int oi = con.DelayedMessages.FindIndex(it => it.rmsg.Msg.MessageID == rmsg.Msg.MessageID);
                 if (oi != -1)
@@ -380,6 +443,11 @@ public static partial class Networking
             var msg = rmsg.Msg;
             if (!msg.RequestConfirmation)
                 return;
+            if(con == null && msg.SenderID != ID_UNKNOWN)
+            {
+                LogEvent("Attempting to solicit a confirmation from a connection that does not exist, but has an ID other than ID_UNKNOWN", Severity.WARNING);
+                return;
+            }
             if (msg.MType == (int)MessageType.MSG_CONFIRM)
             {
                 LogEvent("Potential loop detected and avoided (RequestConfirnmation) on MSG_CONFIRM). " +
@@ -389,7 +457,7 @@ public static partial class Networking
             long id = MSG_ID_NO_CONNECTION;
             if (con != null)
                 id = con.GenerateMessageID();
-            var nmsg = Message.BasicMessage(id, rmsg.Msg.SenderID, ID, (int)MessageType.MSG_CONFIRM, false);
+            var nmsg = Message.BasicMessage(id, ID, rmsg.Msg.SenderID, (int)MessageType.MSG_CONFIRM, con != null, false);
             nmsg.Data = SerializeStruct(new MConfirm()
             {
                 MessageID = rmsg.Msg.MessageID,
@@ -402,7 +470,7 @@ public static partial class Networking
                 Msg = nmsg,
                 Time = DateTime.Now,
                 LastTime = DateTime.Now,
-                EndpointOverride = (con == null) ? rmsg.Endpoint : null,
+                Endpoint = (con == null) ? rmsg.Endpoint : con.Endpoint,
             };
             QueueSendMessage(sm);
         }
@@ -413,7 +481,7 @@ public static partial class Networking
             MessageReaction react = MessageReaction.ACCEPTED;
             if (!rmsg.PreValidated)
             {
-                if (rmsg.Msg.MessageID >= con.LastID && con.TotalReceivedFrom > 0)
+                if (con != null && rmsg.Msg.MessageID <= con.LastID && con.TotalReceivedFrom > 0 && rmsg.Msg.MessageID > 0)
                 {
                     LogEvent($"Discarded a message from the past. ID: {rmsg.Msg.MessageID}, FROM: {rmsg.Msg.SenderID}",
                         Severity.WARNING);
@@ -455,6 +523,7 @@ public static partial class Networking
                         react = MessageReaction.ACCEPTED;
                     }
                 }
+                con = ConnectionsByID.GetValueOrDefault(msg.SenderID, null);
             }
             if (con != null)
             {
@@ -463,6 +532,19 @@ public static partial class Networking
             if (con == null || !con.Disconnected)
             {
                 MaybeConfirm(rmsg, con, react);
+            }
+            #if LOG_EVERYTHING
+            if(react != MessageReaction.ACCEPTED)
+            {
+                LogEvent($"Message {react}. " + MessageInfo(rmsg.Msg), Severity.WARNING);
+            }
+            #endif
+        }
+        protected void DisconnectAll(bool notify)
+        {
+            foreach(var it in Connections.ToList())
+            {
+                DisconnectConnection(it, DisconnectReason.END, false);
             }
         }
         void MainLoop()
@@ -494,6 +576,15 @@ public static partial class Networking
             {
                 OnLog(msg, s);
             }
+            #if ASSERT_NET_WARNINGS
+            Assert(!(s == Severity.WARNING));
+            #endif
+            #if ASSERT_NET_ERRORS
+            Assert(!(s == Severity.ERROR));
+            #endif
+            #if ASSERT_NET_FATALS
+            Assert(!(s == Severity.FAIL));
+            #endif
         }
         public void AddHandle(int id, Action<Message> f)
         {
@@ -538,31 +629,48 @@ public static partial class Networking
                             SentMessage smsg = null;
                             lock (_sentMessages)
                             {
-                                int indx = _sentMessages.FindIndex(it => it.ID == msg.MessageID && it.Msg.ReceiverID == msg.SenderID);
+                                int indx = _sentMessages.FindIndex(it => it.ID == m.MessageID 
+                                    && (it.Msg.ReceiverID == msg.SenderID || it.Msg.ReceiverID == ID_UNKNOWN));
                                 if (indx != -1)
                                 {
                                     smsg = _sentMessages[indx];
-                                    _sentMessages.RemoveAt(indx);
                                 }
                                 else
                                 {
                                     LogEvent("Received a confirnmation to a message that did not request one "
                                     + MessageInfo(msg), Severity.WARNING);
+                                    return MessageReaction.DISCARDED;
                                 }
                             }
                             if (smsg != null)
                             {
-                                if (smsg.OnSuccess != null)
-                                    smsg.OnSuccess(smsg);
-                                if (con != null)
+                                if(m.reaction != MessageReaction.ACCEPTED)
                                 {
-                                    con.NoteMessageConfirmed();
+                                    TryAgainOrFail(smsg);
+                                    if (con != null)
+                                    {
+                                        con.NoteMessageLost();
+                                    }
+                                }
+                                else 
+                                {
+                                    if (smsg.OnSuccess != null)
+                                        smsg.OnSuccess(smsg);
+                                    lock (_sentMessages)
+                                    {
+                                        _sentMessages.Remove(smsg);
+                                    }
+                                    if (con != null)
+                                    {
+                                        con.NoteMessageConfirmed();
+                                    }
                                 }
                             }
                             else
                             {
                                 LogEvent($"Received a confirnmation for a forgotten message: {m.MessageID} from {msg.SenderID}",
                                     Severity.WARNING);
+                                return MessageReaction.DISCARDED;
                             }
                             break;
                         }
@@ -576,7 +684,7 @@ public static partial class Networking
                                     LogEvent($"Received a response to a non-existent handshake from {source}", Severity.ERROR);
                                     return MessageReaction.ERROROUS;
                                 }
-                                if (_partialConnection.Endpoint != source)
+                                if (!CompareEndpoints(_partialConnection.Endpoint, source))
                                 {
                                     LogEvent($"Received a handshake response from the wrong endpoint ({source} instead of {_partialConnection.Endpoint})",
                                          Severity.ERROR);
@@ -585,6 +693,8 @@ public static partial class Networking
                                 this.ID = m.ReceiverID;
                                 FinalizeConnection(source, m.SenderID, m.SenderPublicKey, _partialConnection.PrivateKey);
                                 _partialConnection = null;
+                                msg.SenderID = m.SenderID;
+                                msg.ReceiverID = m.ReceiverID;
                             }
                             else
                             {
@@ -592,7 +702,7 @@ public static partial class Networking
                                 (string PublicKey, string PrivateKey) = GenerateKeyPair();
                                 var ncon = FinalizeConnection(source, id, m.SenderPublicKey, PrivateKey);
                                 Message rmsg = Message.BasicMessage(ncon.GenerateMessageID(), ID, id,
-                                    (int)MessageType.MSG_HAND_SHAKE, true);
+                                    (int)MessageType.MSG_HAND_SHAKE, false, true);
                                 var rm = new MHandshake()
                                 {
                                     Accepted = true,
@@ -603,7 +713,7 @@ public static partial class Networking
                                 rmsg.Data = SerializeStruct(rm);
                                 QueueSendMessage(rmsg, (SentMessage s) =>
                                 {
-                                    DisconnectConnection(ncon, DisconnectReason.TIMEOUT);
+                                    DisconnectConnection(ncon, DisconnectReason.TIMEOUT, true);
                                 }, DEFAULT_TIMEOUT, IMPORTANT_RETRIES);
                             }
                             break;
@@ -627,25 +737,25 @@ public static partial class Networking
             }
             return MessageReaction.ACCEPTED;
         }
+        protected virtual void AddConnection(Connection con)
+        {
+            lock (Connections)
+            lock (ConnectionsByID)
+            {
+                Assert(!ConnectionsByID.ContainsKey(con.ID), "Attempting to add a connection that already exists.");
+                ConnectionsByID.Add(con.ID, con);
+                Connections.Add(con);
+            }
+        }
         protected virtual Connection FinalizeConnection(IPEndPoint endpoint, long ID, string publickey, string privatekey)
         {
             Connection con = new Connection(ID, endpoint.Address, (ushort)endpoint.Port, publickey, privatekey);
-            lock (Connections)
-            {
-                Connections.Add(con);
-            }
-            lock (ConnectionsByID)
-            {
-                ConnectionsByID.Add(ID, con);
-            }
-            lock (_sentMessages)
-            {
-                _sentMessages = _sentMessages.FindAll(it => it.Msg.SenderID != ID_UNKNOWN && it.Msg.ReceiverID != ID_UNKNOWN);
-            }
+            AddConnection(con);
             return con;
         }
         protected void RemoveConnection(Connection con)
         {
+            LogEvent($"Removing connection ID: {con.ID}", Severity.INFO);
             con.Disconnected = true;
             lock (_receiveProcessMX)
             {
@@ -673,32 +783,56 @@ public static partial class Networking
                 }
             }
         }
+        void TryAgainOrFail(SentMessage sm, bool noretries= false)
+        {
+            if(sm.Retries == 0 || noretries)
+            {
+                if(sm.OnFailure != null)
+                    sm.OnFailure(sm);
+                lock(_sentMessages)
+                {
+                    _sentMessages.Remove(sm);
+                }
+            }
+            else 
+            {
+                sm.Retries--;
+                sm.FailedAtLeastOnce = true;
+                sm.LastTime = DateTime.Now;
+                QueueSendMessage(sm);
+            }
+        }
         void CheckSentMessages()
         {
             lock (_sentMessages)
             {
                 var nsm = _sentMessages.ToList();
-                foreach (var _it in _sentMessages)
+                foreach (var smsg in _sentMessages)
                 {
-                    if (!Connections.Any(it => MatchIDs(it.ID, _it.Msg.ReceiverID)))
-                        nsm.Remove(_it);
+                    if((DateTime.Now-smsg.LastTime).TotalMilliseconds >= smsg.Timeout)
+                    {
+                        TryAgainOrFail(smsg, (smsg.Msg.ReceiverID != ID_UNKNOWN && !Connections.Any(it => MatchIDs(it.ID, smsg.Msg.ReceiverID))));
+                    }
                 }
                 _sentMessages = nsm;
             }
         }
-        protected virtual void DisconnectConnection(Connection con, DisconnectReason reason)
+        protected virtual void DisconnectConnection(Connection con, DisconnectReason reason, bool notify)
         {
             if (con.Disconnected)
                 return;
+            if(notify)
+            {
+                var msg = Message.BasicMessage(con.GenerateMessageID(), ID, con.ID, (int)MessageType.MSG_DISCONNECT, true, false);
+                msg.Data = SerializeStruct(new MDisconnect() { Reason = reason });
+                QueueSendMessage(con.Endpoint, msg, false);
+            }
             RemoveConnection(con);
-            var msg = Message.BasicMessage(con.GenerateMessageID(), ID, con.ID, (int)MessageType.MSG_DISCONNECT, false);
-            msg.Data = SerializeStruct(new MDisconnect() { Reason = reason });
-            QueueSendMessage(msg, false);
             CheckSentMessages();
         }
         protected Message BasicMessage(Connection target, int MType, bool response = false, byte[] dt = null)
         {
-            var m = Message.BasicMessage(target.GenerateMessageID(), ID, target.ID, MType, response);
+            var m = Message.BasicMessage(target.GenerateMessageID(), ID, target.ID, MType, true, response);
             if (dt != null)
                 m.Data = dt;
             return m;
@@ -709,11 +843,11 @@ public static partial class Networking
         }
         protected virtual bool MatchIDs(long MyID, long TargetID)
         {
+            if(MyID == ID_NULL)
+                return true;
             if (TargetID == ID_UNKNOWN)
                 return true;
             if (TargetID == ID_ALL && MyID != ID_NULL)
-                return true;
-            if (MyID == ID_NULL && MyID == TargetID)
                 return true;
             if (TargetID == ID_NULL)
                 return false;
@@ -755,11 +889,16 @@ public static partial class Networking
             {
                 Assert(_sentMessages.Count == 0);
             }
-            lock (DefaultEndpoint)
+            if(DefaultEndpoint != null)
             {
-                DefaultEndpoint = endpoint;
+                lock (DefaultEndpoint)
+                {
+                    DefaultEndpoint = endpoint;
+                }
             }
-            var msg = Message.BasicMessage(MSG_ID_NO_CONNECTION, ID_UNKNOWN, ID_UNKNOWN, (int)MessageType.MSG_HAND_SHAKE, false);
+            else 
+                DefaultEndpoint = endpoint;
+            var msg = Message.BasicMessage(MSG_ID_NO_CONNECTION, ID_UNKNOWN, ID_UNKNOWN, (int)MessageType.MSG_HAND_SHAKE, false, false);
             var pair = GenerateKeyPair();
             _partialConnection = new PartialConnection();
             _partialConnection.Endpoint = endpoint;
@@ -794,11 +933,21 @@ public static partial class Networking
         {
             this.Port = port;
             this.ID = ID_NULL;
-            _sender = new UdpClient(port);
-            _receiver = new UdpClient(port);
+            _sender = new UdpClient();
+            _sender.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _sender.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+            _receiver = new UdpClient();
+            _receiver.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _receiver.Client.Bind(new IPEndPoint(IPAddress.Any, port));
             _receiveThread = new System.Threading.Thread(ReceiveLoop);
             _sendThread = new System.Threading.Thread(SendLoop);
             _mainThread = new System.Threading.Thread(MainLoop);
+
+            _receiveThread.Name = "Receive_" + this.GetType().Name;
+            _sendThread.Name = "Send_" + this.GetType().Name;
+            _mainThread.Name = "Main_" + this.GetType().Name;
+
+
             if (start)
                 Start();
         }

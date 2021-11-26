@@ -1,4 +1,5 @@
-﻿using System;
+﻿using System.Security.Cryptography;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -24,8 +25,9 @@ public static partial class Networking
         void OnReceived(Message msg);
         void OnLoginFailure();
         void OnLoginSuccess(Peer.Connection con);
+        void OnDisconnected(DisconnectReason reason, DisconnectType type);
         void OnPeerDiscovered(Peer.Connection con, bool isadmin);
-        void OnDisconnect(Peer.Connection con, DisconnectReason reason);
+        void OnPeerLost(Peer.Connection con, DisconnectReason reason, DisconnectType type);
         void OnStatus(MStatus stat);
     }
     public class RelayClient : Peer
@@ -68,8 +70,11 @@ public static partial class Networking
         }
         protected MessageReaction ProcessRelayClientMessage(Message msg, Connection con)
         {
-            if (msg.MType > (int)RelayMessage.RELAY_BEFORE_FIRST && msg.MType < (int)RelayMessage.RELAY_AFTER_LAST)
+            if (msg.MType <= (int)RelayMessage.RELAY_BEFORE_FIRST || msg.MType >= (int)RelayMessage.RELAY_AFTER_LAST)
+            {
+                LogEvent("RelayClient message out of enum bounds: " + MessageInfo(msg), Severity.WARNING);
                 return MessageReaction.ERROROUS;
+            }
             try
             {
                 switch ((RelayMessage)msg.MType)
@@ -118,7 +123,7 @@ public static partial class Networking
                             }
                             var ncon = new Connection(m.id, _relayConnection.Address, _relayConnection.Port,
                                  _relayConnection.PublicKey, _relayConnection.PrivateKey);
-                            Connections.Add(ncon);
+                            AddConnection(ncon);
                             NetAssert(!(m.isadmin && IsAdmin));
                             if (m.isadmin)
                             {
@@ -147,6 +152,28 @@ public static partial class Networking
                             _handlers.OnStatus(m);
                             break;
                         }
+                    case RelayMessage.RELAY_NOTIFY_DISCONNECT:
+                    {
+                        var m = DeserializeStruct<MNotifyDisconnected>(msg.Data);
+                        if(m.DisconnectedID == ID)
+                        {
+                            DisconnectAll(false);
+                            IsLoggedIn = false;
+                            _admin = null;
+                            ID = 0;
+                            _fellowUsers.Clear();
+                            _partialConnection = null;
+                            Connections.Clear();
+                            _handlers.OnDisconnected(m.Reason, m.Type);
+                        }
+                        else
+                        {
+                            var ocon = ConnectionsByID[m.DisconnectedID];
+                            DisconnectConnection(ocon, m.Reason, false);
+                            _handlers.OnPeerLost(ocon, m.Reason, m.Type);
+                        }
+                        break;
+                    }
                     default:
                         {
                             return MessageReaction.MALFORMED;
@@ -198,12 +225,28 @@ public static partial class Networking
             LogIn(_password, _wantsAdmin);
             return con;
         }
+        public long SendMessage(long TargetID, int SpecialType, byte[] data, Action<long> OnFailure, Action<long> OnSuccess)
+        {
+            lock(Connections)
+            lock(ConnectionsByID)
+            {
+                Assert(IsLoggedIn);
+                Assert(ConnectionsByID.ContainsKey(TargetID));
+                SpecialType += INTER_RELAY_NAMESPACE_START;
+                Assert(SpecialType < INTER_RELAY_NAMESPACE_END);
+                Assert(_admin == null || TargetID != _admin.ID);
+                Assert(_knownLoggedIn.Any(it => it.ID == TargetID));
+                var msg = BasicMessage(ConnectionsByID[TargetID], SpecialType, false, data);
+                QueueSendMessage(msg, (sm) => OnFailure(msg.MessageID), (sm) => OnSuccess(msg.MessageID), DEFAULT_TIMEOUT, IMPORTANT_RETRIES);
+                return msg.MessageID;
+            }
+        }
         public override void Start()
         {
             base.Start();
             ConnectToServer(RelayEndpoint);
         }
-        public RelayClient(IPEndPoint relayserver, ushort myport, string password, bool isadmin, IRelayClientHandlers handles, bool start = false) : base(myport, false)
+        public RelayClient(IRelayClientHandlers handles, IPEndPoint relayserver, ushort myport, string password, bool isadmin, bool start = false) : base(myport, false)
         {
             this._password = password;
             this._wantsAdmin = isadmin;

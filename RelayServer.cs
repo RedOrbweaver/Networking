@@ -58,11 +58,13 @@ public static partial class Networking
     [StructLayout(LayoutKind.Sequential)]
     struct MLogin
     {
+        [MarshalAs(UnmanagedType.LPUTF8Str, SizeConst = 64)]
         public string password;
     }
     [StructLayout(LayoutKind.Sequential)]
     struct MSetPassword
     {
+        [MarshalAs(UnmanagedType.LPUTF8Str, SizeConst = 64)]
         public string password;
     }
     [StructLayout(LayoutKind.Sequential)]
@@ -76,7 +78,8 @@ public static partial class Networking
     struct MNotifyDisconnected
     {
         public long DisconnectedID;
-        public DisconnectType Reason;
+        public DisconnectReason Reason;
+        public DisconnectType Type;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -150,9 +153,9 @@ public static partial class Networking
             }
             c.ForEach(it => QueueSendMessage(msg, requestreturn));
         }
-        protected override void DisconnectConnection(Connection con, DisconnectReason reason)
+        protected override void DisconnectConnection(Connection con, DisconnectReason reason, bool notify)
         {
-            base.DisconnectConnection(con, reason);
+            base.DisconnectConnection(con, reason, notify);
 
             Connections.Remove(con);
             lock (_loggedIn)
@@ -162,8 +165,11 @@ public static partial class Networking
         }
         protected MessageReaction ProcessRelayMessage(Message msg, Connection con)
         {
-            if (msg.MType > (int)RelayMessage.RELAY_BEFORE_FIRST && msg.MType < (int)RelayMessage.RELAY_AFTER_LAST)
+            if (msg.MType <= (int)RelayMessage.RELAY_BEFORE_FIRST || msg.MType >= (int)RelayMessage.RELAY_AFTER_LAST)
+            {
+                LogEvent("RelayServer message out of enum bounds: " + MessageInfo(msg), Severity.WARNING);
                 return MessageReaction.ERROROUS;
+            }
             try
             {
                 switch ((RelayMessage)msg.MType)
@@ -181,7 +187,7 @@ public static partial class Networking
                             bool granted = (isadmin && m.password == _adminPassword || (!isadmin && m.password == _clientPassword));
                             if (!granted)
                             {
-                                QueueSendMessage(BasicMessage(con, (int)RelayMessage.RELAY_LOGIN_ADMIN, true, new MLoginResponse()
+                                QueueSendMessage(BasicMessage(con, (int)msg.MType, true, new MLoginResponse()
                                 {
                                     granted = granted,
                                 }), true);
@@ -193,9 +199,9 @@ public static partial class Networking
                                     AlternativeAddresses.Add(con.ID, ID_ADMIN);
                                 }
                                 _adminLogging = true;
-                                QueueSendMessage(BasicMessage(con, (int)RelayMessage.RELAY_LOGIN_ADMIN, true, new MLoginResponse()
+                                QueueSendMessage(BasicMessage(con, (int)msg.MType, true, new MLoginResponse()
                                 {
-                                    granted = (m.password == _adminPassword),
+                                    granted = granted,
                                     newid = (isadmin) ? ID_ADMIN : con.ID,
                                     isadmin = isadmin,
                                 }), (sm) =>  // fail
@@ -227,8 +233,9 @@ public static partial class Networking
                         {
                             if (_loggedIn.Contains(con))
                             {
-                                RelayToAll(con, msg);
-                                DisconnectConnection(con, DisconnectReason.END);
+                                var nmsg = msg;
+                                RelayToAll(con, nmsg);
+                                DisconnectConnection(con, DisconnectReason.END, false);
                             }
                             break;
                         }
@@ -253,9 +260,10 @@ public static partial class Networking
                                 new MNotifyDisconnected()
                                 {
                                     DisconnectedID = m.ID,
-                                    Reason = (ban) ? DisconnectType.BAN : DisconnectType.KICK
+                                    Reason = DisconnectReason.INSANITY,
+                                    Type = (ban) ? DisconnectType.BAN : DisconnectType.KICK,
                                 }), true);
-                            DisconnectConnection(found, DisconnectReason.END);
+                            DisconnectConnection(found, DisconnectReason.END, false);
                             break;
                         }
                     case RelayMessage.RELAY_ADMIN_POWER_OFF:
@@ -331,9 +339,13 @@ public static partial class Networking
             var br = base.CheckAccepted(source, msg, con);
             if (br == MessageReaction.MALFORMED || br == MessageReaction.ERROROUS)
                 return br;
-            if (msg.MType != (int)MessageType.MSG_CONFIRM)
-                if (msg.MType > (int)MessageType.MESSAGE_TYPE_BEFORE_FIRST && msg.MType < (int)MessageType.MESAGE_TYPE_AFTER_LAST)
+            if (msg.MType == (int)MessageType.MSG_CONFIRM)
+            {
+                if(msg.ReceiverID == ID || msg.ReceiverID == ID_UNKNOWN)
                     return br;
+            }
+            else if (msg.MType > (int)MessageType.MESSAGE_TYPE_BEFORE_FIRST && msg.MType < (int)MessageType.MESAGE_TYPE_AFTER_LAST)
+                return br;
             Assert(con != null);
             if (!IsAllowedToMessage(msg, con))
                 return MessageReaction.ERROROUS;

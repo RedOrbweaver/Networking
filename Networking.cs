@@ -1,4 +1,5 @@
-﻿/* Networking.cs
+﻿using System.IO;
+/* Networking.cs
 
     Main defines, basic message definitions, Message
 
@@ -68,6 +69,7 @@ public static partial class Networking
         public bool Accepted;
         public long SenderID;
         public long ReceiverID;
+        [MarshalAs(UnmanagedType.LPUTF8Str, SizeConst = 64)]
         public string SenderPublicKey;
     }
     [StructLayout(LayoutKind.Sequential)]
@@ -87,7 +89,10 @@ public static partial class Networking
         public bool RequestConfirmation;
         public bool IsResponse;
         public int MType;
-        public byte[] Data;
+        private VArray256 _data;
+        public MessageType TypeAsMessageType {get => (MessageType)MType;}
+        public RelayMessage TypeAsRelayMessage {get => (RelayMessage)MType;}
+        public byte[] Data { get => _data.Data; set => _data.Data = value; }
         private void UpdateHash()
         {
             this.Hash = CalculateHash(this);
@@ -100,7 +105,7 @@ public static partial class Networking
             int shiftpos = 0;
             foreach (var b in SerializeStruct(msg))
             {
-                shiftptr[b] ^= b;
+                shiftptr[shiftpos] ^= b;
                 hash ^= new RNG(hash + b).NextULong();
                 shiftpos = (shiftpos + 1) % sizeof(ulong);
             }
@@ -135,10 +140,11 @@ public static partial class Networking
 
             return msg;
         }
-        public static Message BasicMessage(long ID, long SenderID, long ReceiverID, int type, bool response)
+        public static Message BasicMessage(long ID, long SenderID, long ReceiverID, int type, bool encrypted, bool response)
         {
             return new Message()
             {
+                Encrypted = encrypted,
                 MessageID = ID,
                 SenderID = SenderID,
                 ReceiverID = ReceiverID,
@@ -150,7 +156,7 @@ public static partial class Networking
     }
     public static bool IsPeerID(long ID)
     {
-        return ID >= 0;
+        return ID != ID_ALL && ID != ID_NULL;
     }
     public static (string PublicKey, string PrivateKey) GenerateKeyPair()
     {
@@ -162,6 +168,7 @@ public static partial class Networking
     }
     public static bool CompareEndpoints(IPEndPoint v0, IPEndPoint v1)
     {
-        return (v0.Port == v1.Port) && (v0.Address.Equals(v1.Address));
+        return v0.Equals(v1);
+        //return (v0.Port == v1.Port) && (v0.Address.Equals(v1.Address));
     }
 }
