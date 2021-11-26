@@ -1,5 +1,5 @@
 ﻿#define DISABLE_TIMEOUTS
-//#define ASSERT_NET_WARNINGS
+#define ASSERT_NET_WARNINGS
 #define ASSERT_NET_ERRORS
 #define ASSERT_NET_FATALS
 #define LOG_EVERYTHING
@@ -314,45 +314,49 @@ public static partial class Networking
         }
         void UpdateConnections()
         {
-            foreach (var it in Connections)
+            lock(Connections)
+            lock(ConnectionsByID)
             {
-                var now = DateTime.Now;
-                if ((now - it.LastSent).TotalMilliseconds > AUTO_ECHO_AFTER)
+                foreach (var it in Connections.ToList())
                 {
-                    Echo(it, (SentMessage sm) =>
+                    var now = DateTime.Now;
+                    if ((now - it.LastSent).TotalMilliseconds > AUTO_ECHO_AFTER)
+                    {
+                        Echo(it, (SentMessage sm) =>
+                        {
+                            DisconnectConnection(it, DisconnectReason.TIMEOUT, true);
+                        }, AUTO_ECHO_TIMEOUT, IMPORTANT_RETRIES);
+                    }
+                    if ((now - it.LastUpdate).TotalMilliseconds > FORCED_DISCONNECT_TIMEOUT)
                     {
                         DisconnectConnection(it, DisconnectReason.TIMEOUT, true);
-                    }, AUTO_ECHO_TIMEOUT, IMPORTANT_RETRIES);
-                }
-                if ((now - it.LastUpdate).TotalMilliseconds > FORCED_DISCONNECT_TIMEOUT)
-                {
-                    DisconnectConnection(it, DisconnectReason.TIMEOUT, true);
-                    continue;
-                }
-                var toexec = new List<(ReceivedMessage rmsg, DateTime rtime)>();
-                foreach (var dm in it.DelayedMessages)
-                {
-                    if (DateTime.Now >= dm.rtime)
-                    {
-                        toexec.Add(dm);
+                        continue;
                     }
-                }
-                if (toexec.Count > 0)
-                {
-                    toexec.Sort((dm0, dm1) => dm0.rtime.CompareTo(dm1.rtime));
-                    foreach (var dm in toexec)
+                    var toexec = new List<(ReceivedMessage rmsg, DateTime rtime)>();
+                    foreach (var dm in it.DelayedMessages)
                     {
-                        it.DelayedMessages.Remove(dm);
-                        lock (_toReceive)
+                        if (DateTime.Now >= dm.rtime)
                         {
-                            _toReceive.Enqueue(dm.rmsg);
+                            toexec.Add(dm);
                         }
                     }
-                    lock (_toReceive)
+                    if (toexec.Count > 0)
                     {
-                        var l = _toReceive.ToList();
-                        l.Sort((m0, m1) => m0.Msg.MessageID.CompareTo(m1.Msg.MessageID));
-                        _toReceive = new Queue<ReceivedMessage>(l);
+                        toexec.Sort((dm0, dm1) => dm0.rtime.CompareTo(dm1.rtime));
+                        foreach (var dm in toexec)
+                        {
+                            it.DelayedMessages.Remove(dm);
+                            lock (_toReceive)
+                            {
+                                _toReceive.Enqueue(dm.rmsg);
+                            }
+                        }
+                        lock (_toReceive)
+                        {
+                            var l = _toReceive.ToList();
+                            l.Sort((m0, m1) => m0.Msg.MessageID.CompareTo(m1.Msg.MessageID));
+                            _toReceive = new Queue<ReceivedMessage>(l);
+                        }
                     }
                 }
             }
@@ -757,6 +761,8 @@ public static partial class Networking
         {
             LogEvent($"Removing connection ID: {con.ID}", Severity.INFO);
             con.Disconnected = true;
+            lock(ConnectionsByID)
+            lock(Connections)
             lock (_receiveProcessMX)
             {
                 if (ConnectionsByID.ContainsKey(con.ID))
@@ -806,15 +812,13 @@ public static partial class Networking
         {
             lock (_sentMessages)
             {
-                var nsm = _sentMessages.ToList();
-                foreach (var smsg in _sentMessages)
+                foreach (var smsg in _sentMessages.ToList())
                 {
                     if((DateTime.Now-smsg.LastTime).TotalMilliseconds >= smsg.Timeout)
                     {
                         TryAgainOrFail(smsg, (smsg.Msg.ReceiverID != ID_UNKNOWN && !Connections.Any(it => MatchIDs(it.ID, smsg.Msg.ReceiverID))));
                     }
                 }
-                _sentMessages = nsm;
             }
         }
         protected virtual void DisconnectConnection(Connection con, DisconnectReason reason, bool notify)
@@ -933,12 +937,14 @@ public static partial class Networking
         {
             this.Port = port;
             this.ID = ID_NULL;
-            _sender = new UdpClient();
-            _sender.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            _sender.Client.Bind(new IPEndPoint(IPAddress.Any, port));
-            _receiver = new UdpClient();
-            _receiver.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            _receiver.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+            _receiver = new UdpClient(port);
+            //_receiver.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            //_receiver.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+            _sender = _receiver;
+            //_sender = new UdpClient();
+            //_sender.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            //_sender.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+
             _receiveThread = new System.Threading.Thread(ReceiveLoop);
             _sendThread = new System.Threading.Thread(SendLoop);
             _mainThread = new System.Threading.Thread(MainLoop);
