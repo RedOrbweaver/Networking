@@ -4,13 +4,11 @@
 #define ASSERT_NET_FATALS
 #define LOG_EVERYTHING
 using System.Data.Common;
-
 using System.Resources;
 using System.Xml.Schema;
 using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
-using System.ComponentModel.DataAnnotations;
 using System.Data;
 using System.Diagnostics;
 using System.IO;
