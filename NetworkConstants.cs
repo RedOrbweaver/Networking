@@ -26,25 +26,10 @@ using static Utils;
 
 public static partial class Networking
 {
-    public const int MAX_EXTRA_DELAY = 300;
-    public const int FORCED_DISCONNECT_TIMEOUT = 3000;
-    public const int AUTO_ECHO_TIMEOUT = 300;
-    public const int AUTO_ECHO_AFTER = 300;
-    public const int IMPORTANT_RETRIES = 3;
-    public const int UNIMPORTANT_RETRIES = 1;
-    public const int DEFAULT_TIMEOUT = 500;
-    public const int PING_SAMPLES = 10;
-    public const int PACKET_LOSS_SAMPLES = 100;
-    public const int CONNECTION_TIMEOUT_MS = 2000;
-    public const int MAX_MESSAGES_PER_SECOND = 2048;
-    public const int MAX_MESSAGES_PER_MINUTE = 32768;
-    public const int MAX_ERROROUS = 1024;
-    public const int ID_ADMIN = 1;
+    public const int N_SAVED_MESSAGES = 128;
+    public const int PASSWORD_LENGTH = 32;
     public const int ID_RELAY = 0;
     public const int ID_NULL = -1;
     public const int ID_ALL = -2;
     public const int ID_UNKNOWN = -3;
-    public const int MSG_ID_NO_CONNECTION = -1;
-    public const int INTER_RELAY_NAMESPACE_START = 666;
-    public const int INTER_RELAY_NAMESPACE_END = INTER_RELAY_NAMESPACE_START+10000;
 }
