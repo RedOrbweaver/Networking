@@ -56,8 +56,6 @@ public static partial class Networking
             base.AddConnection(conn);
             ConnectionsByEndpoints.Add(conn.End, conn);
             ConnectionsByID.Add(conn.ID, conn);
-            InformLogIn(conn);
-            Connections.FindAll(it => it.LoggedIn).ForEach(it => InformLogIn(it, conn));
         }
         void LogInUser(RelayConnection rc, bool isadmin)
         {
@@ -68,6 +66,8 @@ public static partial class Networking
             }
             rc.LoggedIn = true;
             LoggedIn.Add(rc);
+            InformLogIn(rc);
+            Connections.FindAll(it => it.LoggedIn).ForEach(it => InformLogIn(it, rc));
             OnNewLogIn(rc);
         }
         void ProcessMessage(RelayConnection con, RelayMessage relaymsg)
