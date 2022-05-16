@@ -59,8 +59,9 @@ public static partial class Networking
             CONNECTION_RESPONSE,
             LOGIN_REQUEST,
             LOGIN_RESPONSE,
-            RESEND_MESSAGE,
+            RESEND_MESSAGES,
             RELAY,
+            NEW_PEER,
             LAST_TYPE,
         }
         [StructLayout(LayoutKind.Sequential)]
@@ -91,22 +92,32 @@ public static partial class Networking
             public bool admin;
         }
         [StructLayout(LayoutKind.Sequential)]
-        public struct ResendMessage
+        public struct ResendMessagesMessage
         {
-            public long Index;
+            public long First;
+            public long Last;
         }
         [StructLayout(LayoutKind.Sequential)]
         public struct PackedRelayedMessage
         {
             public VArray128 data;
         }
-        public void Resend(RelayConnection con, ResendMessage rm)
+        [StructLayout(LayoutKind.Sequential)]
+        public struct NewPeerMessage
         {
-            var nmsgi = con.SavedMessages.ToList().FindIndex(it => it.index == rm.Index);
-            if(nmsgi != -1)
+            public long ID;
+            public bool IsAdmin;
+        }
+        public void Resend(RelayConnection con, ResendMessagesMessage rm)
+        {
+            for(long i = rm.First; i <= rm.Last; i++)
             {
-                var nmsg = con.SavedMessages[nmsgi].rm;
-                Send(con.End, nmsg);
+                var nmsgi = con.SavedMessages.ToList().FindIndex(it => it.index == i);
+                if(nmsgi != -1)
+                {
+                    var nmsg = con.SavedMessages[nmsgi].rm;
+                    Send(con.End, nmsg);
+                }
             }
         }
         public virtual void AddConnection(RelayConnection conn)
@@ -140,14 +151,15 @@ public static partial class Networking
                 case RelayMessageType.LOGIN_RESPONSE:
                     des.data = DeserializeStruct<LoginResponse>(rest);
                     break;
-                case RelayMessageType.RESEND_MESSAGE:
-                    des.data = DeserializeStruct<ResendMessage>(rest);
+                case RelayMessageType.RESEND_MESSAGES:
+                    des.data = DeserializeStruct<ResendMessagesMessage>(rest);
                     break;
                 case RelayMessageType.RELAY:
                     des.data = DeserializeStruct<PackedRelayedMessage>(rest);
                     break;
-                // case RelayMessageType.RELAY:
-                //     return DeserializeStruct<>(rest);
+                case RelayMessageType.NEW_PEER:
+                    des.data = DeserializeStruct<NewPeerMessage>(rest);
+                    break;
                 default:
                     throw new NotImplementedException();
             }
@@ -191,11 +203,10 @@ public static partial class Networking
             _sendQueue.Enqueue((end, dt));
             _sendEvent.Set();
         } 
-        public void Send<T>(long sender_ID, RelayConnection conn, RelayMessageType type, T dt) where T : struct
+        public void Send<T>(long sender_ID, long indx, RelayConnection conn, RelayMessageType type, T dt) where T : struct
         {
             lock(conn)
             {
-                long indx = conn.LastSentIndex++;
                 var rm = SerializeMessage(conn, indx, ID, type, dt, true);
                 lock(conn.SavedMessages)
                 {
@@ -204,9 +215,9 @@ public static partial class Networking
                 Send(conn.End, rm);
             }
         }
-        public void Send<T>(RelayConnection conn, RelayMessageType type, T dt) where T : struct
+        public void Send<T>(RelayConnection conn, long indx, RelayMessageType type, T dt) where T : struct
         {
-            Send(ID, conn, type, dt);
+            Send(ID, indx, conn, type, dt);
         }
         static int _nextID = 0;
         static object _idLock = new object();
@@ -278,7 +289,6 @@ public static partial class Networking
                     catch(DeserializationFailedException)
                     {
                         Console.WriteLine($"Unable to deserialize message from {received.end}");
-                        OnReceivedMalformed((IPEndPoint)received.end);
                     }
                     if(message != null)
                     {
@@ -290,7 +300,28 @@ public static partial class Networking
             }
         }
         public abstract void OnReceive(IPEndPoint source, RelayMessage message);
-        public abstract void OnReceivedMalformed(IPEndPoint source, long index = -1);
+        public void NoteReceiveError(IPEndPoint source)
+        {
+            Console.WriteLine($"Received a malformed message from {source}");
+        }
+        public void NoteReceiveError(IPEndPoint source, DeserializedRelayMessage drm)
+        {
+            Console.WriteLine($"Received a malformed message from {source}. Type {drm.type}, index {drm.index}");
+        }
+        public void RequestResendMessages(RelayConnection conn, long first, long last)
+        {
+            Assert(first != MSG_INDEX_IGNORE && first <= last);
+            Send<ResendMessagesMessage>(ID, MSG_INDEX_IGNORE, conn, RelayMessageType.RESEND_MESSAGES, new ResendMessagesMessage()
+            {
+                First = first,
+                Last = last
+            });
+        }
+        public void RequestResendMessage(RelayConnection conn, long indx)
+        {
+            Assert(indx != MSG_INDEX_IGNORE);
+            RequestResendMessages(conn, indx, indx);
+        }
         
         public RelayNode(IPEndPoint listen_end, ushort port=0)
         {

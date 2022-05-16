@@ -58,62 +58,32 @@ public static partial class Networking
             System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
     }
     [System.Serializable]
-    public class NetMessageInvalidHashException : NetException
+    public class NetUnknownMessageException : NetException
     {
-        public NetMessageInvalidHashException() { }
-        public NetMessageInvalidHashException(string message) : base(message) { }
-        public NetMessageInvalidHashException(string message, System.Exception inner) : base(message, inner) { }
-        protected NetMessageInvalidHashException(
+        public NetUnknownMessageException() { }
+        public NetUnknownMessageException(string message) : base(message) { }
+        public NetUnknownMessageException(string message, System.Exception inner) : base(message, inner) { }
+        protected NetUnknownMessageException(
             System.Runtime.Serialization.SerializationInfo info,
             System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
     }
     [System.Serializable]
-    public abstract class NetConnectionBrokenException : NetException
+    public class NetConnectionErrorException : NetException
     {
-        public NetConnectionBrokenException() { }
-        public NetConnectionBrokenException(string message) : base(message) { }
-        public NetConnectionBrokenException(string message, System.Exception inner) : base(message, inner) { }
-        protected NetConnectionBrokenException(
+        public NetConnectionErrorException() { }
+        public NetConnectionErrorException(string message) : base(message) { }
+        public NetConnectionErrorException(string message, System.Exception inner) : base(message, inner) { }
+        protected NetConnectionErrorException(
             System.Runtime.Serialization.SerializationInfo info,
             System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
     }
     [System.Serializable]
-    public class NetConnectionTimeoutException : NetConnectionBrokenException
+    public class NetConnectionTimeoutException : NetConnectionErrorException
     {
         public NetConnectionTimeoutException() { }
         public NetConnectionTimeoutException(string message) : base(message) { }
         public NetConnectionTimeoutException(string message, System.Exception inner) : base(message, inner) { }
         protected NetConnectionTimeoutException(
-            System.Runtime.Serialization.SerializationInfo info,
-            System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
-    }
-    [System.Serializable]
-    public class NetConnectionDDOSException : NetConnectionBrokenException
-    {
-        public NetConnectionDDOSException() { }
-        public NetConnectionDDOSException(string message) : base(message) { }
-        public NetConnectionDDOSException(string message, System.Exception inner) : base(message, inner) { }
-        protected NetConnectionDDOSException(
-            System.Runtime.Serialization.SerializationInfo info,
-            System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
-    }
-    [System.Serializable]
-    public class NetConnectionInsaneException : NetConnectionBrokenException
-    {
-        public NetConnectionInsaneException() { }
-        public NetConnectionInsaneException(string message) : base(message) { }
-        public NetConnectionInsaneException(string message, System.Exception inner) : base(message, inner) { }
-        protected NetConnectionInsaneException(
-            System.Runtime.Serialization.SerializationInfo info,
-            System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
-    }
-    [System.Serializable]
-    public class NetFailedToConnectToServerException : NetException
-    {
-        public NetFailedToConnectToServerException() { }
-        public NetFailedToConnectToServerException(string message) : base(message) { }
-        public NetFailedToConnectToServerException(string message, System.Exception inner) : base(message, inner) { }
-        protected NetFailedToConnectToServerException(
             System.Runtime.Serialization.SerializationInfo info,
             System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
     }

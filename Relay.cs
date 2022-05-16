@@ -35,11 +35,29 @@ public static partial class Networking
         public List<RelayConnection> LoggedIn = new List<RelayConnection>();
         public Func<RelayConnection, bool> CanLogIn = rc => true; 
         public Action<RelayConnection> OnNewLogIn = rc => {};
+        void InformLogIn(RelayConnection newcon, RelayConnection con)
+        {
+            Send<NewPeerMessage>(ID_RELAY, MSG_INDEX_IGNORE, con, RelayMessageType.NEW_PEER, new NewPeerMessage()
+            {
+                ID=newcon.ID,
+                IsAdmin=newcon.IsAdmin,
+            });
+        }
+        void InformLogIn(RelayConnection newcon)
+        {
+            Assert(newcon.LoggedIn);
+            foreach(var it in Connections.FindAll(it => it.LoggedIn))
+            {
+                InformLogIn(newcon, it);
+            }
+        }
         public override void AddConnection(RelayConnection conn)
         {
             base.AddConnection(conn);
             ConnectionsByEndpoints.Add(conn.End, conn);
             ConnectionsByID.Add(conn.ID, conn);
+            InformLogIn(conn);
+            Connections.FindAll(it => it.LoggedIn).ForEach(it => InformLogIn(it, conn));
         }
         void LogInUser(RelayConnection rc, bool isadmin)
         {
@@ -61,9 +79,9 @@ public static partial class Networking
             }
             catch(NetAssertionException)
             {
-                OnReceivedMalformed(con.End);
+                NoteReceiveError(con.End);
             }
-            if(msg.data is ResendMessage rm)
+            if(msg.data is ResendMessagesMessage rm)
             {
                 Resend(con, rm);
             }
@@ -74,14 +92,14 @@ public static partial class Networking
                     (lr.admin && _admin != null) || 
                     !CanLogIn(con))
                 {
-                    Send(con, RelayMessageType.LOGIN_RESPONSE, new LoginResponse()
+                    Send(con, 0, RelayMessageType.LOGIN_RESPONSE, new LoginResponse()
                     {
                         success = false,
                         admin = false,
                     });
                 }
                 LogInUser(con, lr.admin);
-                Send(con, RelayMessageType.LOGIN_RESPONSE, new LoginResponse()
+                Send(con, 0, RelayMessageType.LOGIN_RESPONSE, new LoginResponse()
                 {
                     success = true,
                     admin = lr.admin,
@@ -89,14 +107,14 @@ public static partial class Networking
             }
             else
             {
-                OnReceivedMalformed(con.End, msg.index);
+                NoteReceiveError(con.End, msg);
             }
         }
         public void RelayTo(long target, long source, RelayMessage rm)
         {
             if(!ConnectionsByID.ContainsKey(target))
             {
-                OnReceivedMalformed(ConnectionsByID[rm.SenderID].End, -1);
+                NoteReceiveError(ConnectionsByID[rm.SenderID].End);
                 return;
             }
             var tarcon =  ConnectionsByID[target];
@@ -114,7 +132,7 @@ public static partial class Networking
             }
             if(message.Encrypted)
             {
-                OnReceivedMalformed(source);
+                NoteReceiveError(source);
                 return;
             }
             if(message.ReceiverID != ID)
@@ -129,7 +147,8 @@ public static partial class Networking
             }
             catch(NetAssertionException)
             {
-                OnReceivedMalformed(source);
+                NoteReceiveError(source);
+                return;
             }
             if(msg.data is ConnectionRequest conreq)
             {
@@ -137,16 +156,13 @@ public static partial class Networking
                 var rc = new RelayConnection()
                 {
                     End = source,
-                    ClientPubKey = conreq.pubkey,
-                    ServerPrivKey = keys.privkey,
-                    ServerPubKey = keys.pubkey,
                     ID = _lastID++,
                     IsAdmin = false,
                     LastReceivedIndex = msg.index,
                     LastSentIndex = 0,
                 };
                 AddConnection(rc);
-                Send(rc, RelayMessageType.CONNECTION_RESPONSE, new ConnectionResponse()
+                Send(rc, 0, RelayMessageType.CONNECTION_RESPONSE, new ConnectionResponse()
                 {
                     allowed = true,
                     pubkey = rc.ServerPubKey,
@@ -154,22 +170,7 @@ public static partial class Networking
                 });
             }
             else 
-                OnReceivedMalformed(source);
-        }
-
-        public override void OnReceivedMalformed(IPEndPoint source, long index = -1)
-        {
-            throw new NotImplementedException();
-            if(index == -1 || !ConnectionsByEndpoints.ContainsKey(source))
-            {
-                Console.WriteLine($"Received a maformed message from {source.ToString()}, index={index}, could not respond back");
-                return;
-            }
-            var rc = ConnectionsByEndpoints[source];
-            Send(rc, RelayMessageType.RESEND_MESSAGE, new ResendMessage()
-            {
-                Index = index,
-            });
+                NoteReceiveError(source);
         }
         public Relay(ushort port, string password, string admin_password) : base(new IPEndPoint(IPAddress.Any, 0), port)
         {

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.ComTypes;
 using System.Globalization;
 using System;
 using System.Collections.Generic;
@@ -34,12 +35,13 @@ public static partial class Networking
         AutoResetEvent _ev = new AutoResetEvent(false);
         public bool IsAdmin {get; protected set;} = false;
         public Action<long, PackedRelayedMessage> OnRelayedReceived = (id, drm) => {};
+        public Action<RelayConnection> OnNewConnection = r => {};
         public override void OnReceive(IPEndPoint source, RelayMessage message)
         {
             var con = Connections.Find(it => it.ID == message.SenderID);
             if(con == null)
             {
-                OnReceivedMalformed(source);
+                NoteReceiveError(source);
                 return;
             }
             DeserializedRelayMessage msg = null;
@@ -49,9 +51,31 @@ public static partial class Networking
             }
             catch(NetAssertionException)
             {
-                OnReceivedMalformed(con.End);
+                NoteReceiveError(con.End);
             }
-            if(msg.data is ResendMessage rm)
+            if(con.LastReceivedIndex == MSG_INDEX_IGNORE)
+                con.LastReceivedIndex = msg.index;
+            else if(msg.index != MSG_INDEX_IGNORE) 
+            {
+                if (msg.index <= con.LastReceivedIndex)
+                {
+                    Console.WriteLine($"received a message out of order/repeated {msg.data.GetType().Name}, index={msg.index}");
+                    return;
+                }
+                var dif = msg.index-con.LastReceivedIndex;
+                if(dif > 1 && dif < 5)
+                {
+                    RequestResendMessages(con, con.LastReceivedIndex+1, msg.index);
+                    return;
+                }
+                con.LastReceivedIndex = msg.index;
+            }
+            if(msg.data is PackedRelayedMessage prm)
+            {
+                OnRelayedReceived(message.SenderID, prm);
+                return;
+            }
+            else if(msg.data is ResendMessagesMessage rm)
             {
                 Resend(con, rm);
             }
@@ -74,31 +98,38 @@ public static partial class Networking
                 }
                 _ev.Set();
             }
-            else if(msg.data is PackedRelayedMessage prm)
+            else if(msg.data is NewPeerMessage npm)
             {
-                OnRelayedReceived(message.SenderID, prm);
+                if(npm.ID != ID && !Connections.Any(it => it.ID == ID))
+                {
+                    var rc = new RelayConnection()
+                    {
+                        ID = npm.ID,
+                        IsAdmin = npm.IsAdmin,
+                        End = _relay.End,
+                        LoggedIn = true,
+                    };
+                    AddConnection(rc);
+                    OnNewConnection(rc);
+                }
             }
             else
             {
-                OnReceivedMalformed(source, msg.index);
+                NoteReceiveError(source, msg);
             }
         }
-        public void SendRelayed(RelayConnection con, byte[] data)
+        public void SendRelayed( RelayConnection con, byte[] data, long index = -1)
         {
             Assert(con != null);
             Assert(data != null);
-            Send(con, RelayMessageType.RELAY, new PackedRelayedMessage()
+            Send(ID, (index == -1) ? 0 : con.LastSentIndex++, con, RelayMessageType.RELAY, new PackedRelayedMessage()
             {
                 data = new VArray128(){Data = data},
             });
         }
-        public void SendRelayed(long conID, byte[] data)
+        public void SendRelayed(long conID, byte[] data, long index = -1)
         {
-            SendRelayed(Connections.Find(it => it.ID == conID), data);
-        }
-        public override void OnReceivedMalformed(IPEndPoint source, long index = -1)
-        {
-            throw new NotImplementedException();
+            SendRelayed(Connections.Find(it => it.ID == conID), data, index);
         }
         public async Task<bool> TryConnect()
         {
@@ -123,7 +154,7 @@ public static partial class Networking
             return await QueueUserWorkItemAsync<bool>(() => 
             {
 
-                Send(_relay, RelayMessageType.LOGIN_REQUEST, new LoginRequest()
+                Send(_relay, 0, RelayMessageType.LOGIN_REQUEST, new LoginRequest()
                 {
                     password = password,
                     admin = admin,

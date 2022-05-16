@@ -26,10 +26,16 @@ using static Utils;
 
 public static partial class Networking
 {
+    public const int MSG_INDEX_IGNORE = 0;
     public const int N_SAVED_MESSAGES = 128;
     public const int PASSWORD_LENGTH = 32;
     public const int ID_RELAY = 0;
     public const int ID_NULL = -1;
     public const int ID_ALL = -2;
     public const int ID_UNKNOWN = -3;
+
+    public const int MESSAGE_MAX_LEN = 128-sizeof(ulong);
+    public const int DEFAULT_TIMEOUT_MS = 1000;
+    public const int DEFAULT_RETRIES = 3;
+    public const int DEFAULT_RETRY_DELAY_MS = 250;
 }
