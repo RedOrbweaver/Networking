@@ -81,6 +81,7 @@ public static partial class Networking
                 this.con = con;
             }
         }
+        public long ID => _client.ID;
         public List<Peer> Peers {get; protected set;} = new List<Peer>();
         static object _serializationSystemMutex = new object();
         static Dictionary<ulong, Func<byte[], object>> _deserializers = new Dictionary<ulong, Func<byte[], object>>();

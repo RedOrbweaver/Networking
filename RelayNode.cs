@@ -182,7 +182,7 @@ public static partial class Networking
             rm.Message.Data = adt;
             return rm;
         }
-        protected long ID = ID_NULL;
+        public long ID {get; protected set;} = ID_NULL;
         Socket _socket;
         Thread _receiveThread;
         Thread _sendThread;
