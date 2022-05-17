@@ -87,11 +87,15 @@ public static partial class Networking
         static Dictionary<Type, Func<object, byte[]>> _serializers = new Dictionary<Type, Func<object, byte[]>>();
         static Dictionary<Type, ulong> _typeToID = new Dictionary<Type, ulong>();
         static List<ulong> _typeIDs = new List<ulong>();
+        Peer server;
         RelayClient _client;
         Thread _backgroundThread;
         Thread _logicThread;
         object _internalMutex = new object();
         Dictionary<ulong, List<Subscribtion>> _subscribtions = new Dictionary<ulong, List<Subscribtion>>();
+        ConcurrentQueue<Subscribtion> _newSubscribtions = new ConcurrentQueue<Subscribtion>();
+        Dictionary<ulong, List<(Peer peer, RelayNode.PackedRelayedMessage)>> _unregisteredMessages = new Dictionary<ulong, List<(Peer peer, RelayNode.PackedRelayedMessage)>>();
+        Dictionary<ulong, List<ReceivedMessage>> _unsubscribedMessages = new Dictionary<ulong, List<ReceivedMessage>>();
         ulong GenerateTypeID(Type t)
         {
             ulong ret = 666;
@@ -107,7 +111,7 @@ public static partial class Networking
             }
             return ret;
         }
-        void RegisterType<T>() where T : struct
+        ulong RegisterType<T>() where T : struct
         {
             ulong id = GenerateTypeID(typeof(T));
             int sz = Marshal.SizeOf<T>();
@@ -129,6 +133,28 @@ public static partial class Networking
                 _serializers.Add(typeof(T), o => SS((T)o));
                 _typeToID.Add(typeof(T), id);
             }
+            lock(_internalMutex)
+            {
+                if(_unregisteredMessages.ContainsKey(id))
+                {
+                    var ums = _unregisteredMessages[id];
+                    if(!_unsubscribedMessages.ContainsKey(id))
+                        _unsubscribedMessages.Add(id, new List<ReceivedMessage>(ums.Count));
+                    foreach(var it in ums)
+                    {
+                        var rawmsg = DeserializeMessage(it.Item2.data.Data, out id);
+                        ReceivedMessage rm = new ReceivedMessage()
+                        {
+                            Sender = it.peer,
+                            TimeReceived = DateTime.Now,
+                            Message=rawmsg,
+                        };
+                        _unsubscribedMessages[id].Add(rm);
+                    }
+                    _unregisteredMessages.Remove(id);
+                }
+            }
+            return id;
         }
         protected void EnsureRegistered<T>() where T : struct
         {
@@ -164,20 +190,28 @@ public static partial class Networking
         }
         public void UnSubscribe(Subscribtion sub)
         {
-            Assert(_subscribtions.ContainsKey(sub.id) && _subscribtions[sub.id].Contains(sub));
-            _subscribtions[sub.id].Remove(sub);
+            lock(_internalMutex)
+            {
+                Assert(_subscribtions.ContainsKey(sub.id) && _subscribtions[sub.id].Contains(sub));
+                _subscribtions[sub.id].Remove(sub);
+            }
+        }
+        void AddSubscribtion(ulong id, Subscribtion sub)
+        {
+            lock(_internalMutex)
+            {
+                if(!_subscribtions.ContainsKey(id))
+                    _subscribtions.Add(id, new List<Subscribtion>());
+                _subscribtions[id].Add(sub);
+                _newSubscribtions.Enqueue(sub);
+            }
         }
         public Subscribtion Subscribe(ulong id, SubscribtionDelegate OnMessage, Peer source = null)
         {
             Assert(_typeIDs.Contains(id));
             Subscribtion sub = new Subscribtion(id, OnMessage);
             sub.source = source;
-            lock(_internalMutex)
-            {
-                if(!_subscribtions.ContainsKey(id))
-                    _subscribtions.Add(id, new List<Subscribtion>());
-                _subscribtions[id].Add(sub);
-            }
+            AddSubscribtion(id, sub);
             return sub;
         }
         public Subscribtion Subscribe<T>(SubscribtionDelegate OnMessage) where T : struct
@@ -299,9 +333,51 @@ public static partial class Networking
                 queue.Enqueue((id, it));
                 are.Set();
             };
+
+            void CheckSubs(ulong id, ReceivedMessage rm, Peer peer)
+            {
+                lock(_internalMutex)
+                {
+                    if(!_subscribtions.ContainsKey(id) || _subscribtions[id].Count == 0)
+                    {
+                        Console.WriteLine($"Received a message with not subscribers {rm.Message.GetType().Name}");
+                        if(!_unsubscribedMessages.ContainsKey(id))
+                            _unsubscribedMessages.Add(id, new List<ReceivedMessage>());
+                        _unsubscribedMessages[id].Add(rm);
+                        return;
+                    }
+                    var sublist = _subscribtions[id];
+                    foreach(var sub in _subscribtions[id].ToList())
+                    {
+                        if(sub.source == peer || sub.source == null)
+                        {
+                            if(!sub.del(sub, rm))
+                            {
+                                sublist.Remove(sub);
+                            }
+                        }
+                    }
+                    _subscribtions[id] = sublist;
+                }
+            }
+            
+
             while(true)
             {
-                are.WaitOne(10);
+                are.WaitOne(1);
+                Subscribtion nsub;
+                while(_newSubscribtions.TryDequeue(out nsub))
+                {   
+                    lock(_internalMutex)
+                    {
+                        if(_unsubscribedMessages.ContainsKey(nsub.id))
+                        {
+                            var usms = _unsubscribedMessages[nsub.id];
+                            _unsubscribedMessages.Remove(nsub.id);
+                            usms.ForEach(it => CheckSubs(nsub.id, it, it.Sender));
+                        }
+                    }
+                }
                 (long id, RelayNode.PackedRelayedMessage prm) mm;
                 while(queue.TryDequeue(out mm))
                 {
@@ -312,14 +388,20 @@ public static partial class Networking
                         continue;
                     }
                     object rawmsg;
-                    ulong id;
+                    ulong id = 0;
                     try
                     {
                         rawmsg = DeserializeMessage(mm.prm.data.Data, out id);
                     }
                     catch(NetUnknownMessageException)
                     {
-                        Console.WriteLine($"Received an invalid message from {mm.id}");
+                        Console.WriteLine($"Received an invalid message from {mm.id}, typeid={id}");
+                        if(id != 0)
+                        {
+                            if(!_unregisteredMessages.ContainsKey(id))
+                                _unregisteredMessages.Add(id, new List<(Peer peer, RelayNode.PackedRelayedMessage)>());
+                            _unregisteredMessages[id].Add((peer, mm.prm));
+                        }
                         continue;
                     }
                     ReceivedMessage rm = new ReceivedMessage()
@@ -328,34 +410,39 @@ public static partial class Networking
                         TimeReceived = DateTime.Now,
                         Message=rawmsg,
                     };
-                    lock(_internalMutex)
-                    {
-                        if(!_subscribtions.ContainsKey(id) || _subscribtions[id].Count == 0)
-                        {
-                            Console.WriteLine($"Received a message with not subscribers {rm.Message.GetType().Name}");
-                            continue;
-                        }
-                        var sublist = _subscribtions[id];
-                        foreach(var sub in _subscribtions[id].ToList())
-                        {
-                            if(sub.source == peer || sub.source == null)
-                            {
-                                if(!sub.del(sub, rm))
-                                {
-                                    sublist.Remove(sub);
-                                }
-                            }
-                        }
-                        _subscribtions[id] = sublist;
-                    }
+                    CheckSubs(id, rm, peer);
                 }
             }
         }
+        Task<bool> _connectionTask;
+        protected async Task AwaitConnection()
+        {
+            var res = await _connectionTask;
+            if(!res)
+                throw new NetConnectionErrorException("Failed to connect");
+        }
+        protected abstract void OnConnectionLost(NetConnectionErrorException ex);
         protected abstract void Logic();
+        protected void Disconnect()
+        {
+
+        }
+        void LogicCont()
+        {
+            try
+            {
+                Logic();
+            }
+            catch(NetConnectionErrorException err)
+            {
+                OnConnectionLost(err);
+            }
+            Disconnect();
+        }
         public NetworkedStateMachine(IPEndPoint server)
         {
             _backgroundThread = new Thread(BackgroundLoop);
-            _logicThread = new Thread(Logic);
+            _logicThread = new Thread(LogicCont);
             _logicThread.Start();
             _backgroundThread.Start();
             _client = new RelayClient(server);
@@ -363,6 +450,7 @@ public static partial class Networking
             {
                 AddNewPeer(new Peer(con));
             };
+            _connectionTask = _client.TryConnect();
         }
     }
 }

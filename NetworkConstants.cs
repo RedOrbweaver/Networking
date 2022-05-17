@@ -28,7 +28,8 @@ public static partial class Networking
 {
     public const int MSG_INDEX_IGNORE = 0;
     public const int N_SAVED_MESSAGES = 128;
-    public const int PASSWORD_LENGTH = 32;
+    public const int MAX_NAME_LENGTH = 32;
+    public const int MAX_PASSWORD_LENGTH = 32;
     public const int ID_RELAY = 0;
     public const int ID_NULL = -1;
     public const int ID_ALL = -2;

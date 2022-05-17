@@ -79,10 +79,10 @@ public static partial class Networking
         [StructLayout(LayoutKind.Sequential)]
         public struct LoginRequest
         {
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = PASSWORD_LENGTH)]
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = MAX_PASSWORD_LENGTH)]
             public string password;
             public bool admin;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = PASSWORD_LENGTH)]
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = MAX_PASSWORD_LENGTH)]
             public string admin_password;
         }
         [StructLayout(LayoutKind.Sequential)]
