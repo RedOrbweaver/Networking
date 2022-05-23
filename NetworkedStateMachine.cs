@@ -77,8 +77,8 @@ public static partial class Networking
             }
             public Peer(RelayNode.RelayConnection con)
             {
-                Assert(ID != ID_RELAY && ID != ID_NULL);
                 this.con = con;
+                Assert(ID != ID_RELAY && ID != ID_NULL);
             }
         }
         public long ID => _client.ID;
@@ -88,6 +88,7 @@ public static partial class Networking
         static Dictionary<Type, Func<object, byte[]>> _serializers = new Dictionary<Type, Func<object, byte[]>>();
         static Dictionary<Type, ulong> _typeToID = new Dictionary<Type, ulong>();
         static List<ulong> _typeIDs = new List<ulong>();
+        public Action<Peer> OnPeerAdded = p => {};
         Peer server;
         RelayClient _client;
         Thread _backgroundThread;
@@ -322,6 +323,7 @@ public static partial class Networking
         protected virtual void AddNewPeer(Peer peer)
         {
             Peers.Add(peer);
+            OnPeerAdded(peer);
         }
 
         void BackgroundLoop()
@@ -418,6 +420,7 @@ public static partial class Networking
         Task<bool> _connectionTask;
         protected async Task AwaitConnection()
         {
+            while(_connectionTask == null);
             var res = await _connectionTask;
             if(!res)
                 throw new NetConnectionErrorException("Failed to connect");
@@ -428,30 +431,48 @@ public static partial class Networking
         {
 
         }
+        public AutoResetEvent ResumeErrorEvent = new AutoResetEvent(false);
+        public bool HoldingOnError {get; protected set;} = false;
         void LogicCont()
         {
-            try
+            while(true)
             {
-                Logic();
+                try
+                {
+                    Logic();
+                }
+                catch(NetConnectionErrorException err)
+                {
+                    OnConnectionLost(err);
+                }
+                HoldingOnError = true;
+                ResumeErrorEvent.WaitOne();
+                HoldingOnError = false;
             }
-            catch(NetConnectionErrorException err)
-            {
-                OnConnectionLost(err);
-            }
-            Disconnect();
         }
-        public NetworkedStateMachine(IPEndPoint server)
+        public NetworkedStateMachine(IPEndPoint server, string password, bool IsAdmin, string admin_password="")
         {
             _backgroundThread = new Thread(BackgroundLoop);
             _logicThread = new Thread(LogicCont);
+            _client = new RelayClient(server);
             _logicThread.Start();
             _backgroundThread.Start();
-            _client = new RelayClient(server);
             _client.OnNewConnection += con => 
             {
                 AddNewPeer(new Peer(con));
             };
-            _connectionTask = _client.TryConnect();
+            async Task<bool> InternalConnect()
+            {
+                bool b = await _client.TryConnect();
+                if(!b)
+                    return b;
+                if(IsAdmin)
+                    b = await _client.LogInAdmin(password, admin_password);
+                else
+                    b = await _client.LogIn(password);
+                return b;
+            }
+            _connectionTask = InternalConnect();
         }
     }
 }

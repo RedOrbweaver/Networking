@@ -125,6 +125,11 @@ public static partial class Networking
         }
         public override void OnReceive(IPEndPoint source, RelayMessage message)
         {
+            if(message.ReceiverID != ID)
+            {
+                RelayTo(message.ReceiverID, ConnectionsByEndpoints[source].ID, message);
+                return; 
+            }
             if(ConnectionsByEndpoints.ContainsKey(source))
             {
                 ProcessMessage(ConnectionsByEndpoints[source], message);
@@ -134,11 +139,6 @@ public static partial class Networking
             {
                 NoteReceiveError(source);
                 return;
-            }
-            if(message.ReceiverID != ID)
-            {
-                RelayTo(message.ReceiverID, ConnectionsByEndpoints[source].ID, message);
-                return; 
             }
             DeserializedRelayMessage msg = null;
             try

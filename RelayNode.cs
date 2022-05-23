@@ -169,7 +169,7 @@ public static partial class Networking
         {
             var rm = new RelayMessage();
             rm.SenderID = sourceID;
-            rm.ReceiverID = message_index;
+            rm.ReceiverID = target.ID;
             var sersr = SerializeStruct<T>(obj);
             List<byte> dt = new List<byte>(sizeof(int) + sizeof(long) + sersr.Length);
             dt.AddRange(BitConverter.GetBytes((int)type));
@@ -303,10 +303,12 @@ public static partial class Networking
         public void NoteReceiveError(IPEndPoint source)
         {
             Console.WriteLine($"Received a malformed message from {source}");
+            throw new NotImplementedException();
         }
         public void NoteReceiveError(IPEndPoint source, DeserializedRelayMessage drm)
         {
             Console.WriteLine($"Received a malformed message from {source}. Type {drm.type}, index {drm.index}");
+            throw new NotImplementedException();
         }
         public void RequestResendMessages(RelayConnection conn, long first, long last)
         {
