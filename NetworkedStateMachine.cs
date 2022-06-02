@@ -89,7 +89,7 @@ public static partial class Networking
         static Dictionary<Type, ulong> _typeToID = new Dictionary<Type, ulong>();
         static List<ulong> _typeIDs = new List<ulong>();
         public Action<Peer> OnPeerAdded = p => {};
-        Peer server;
+        protected Peer _admin;
         RelayClient _client;
         Thread _backgroundThread;
         Thread _logicThread;
@@ -323,6 +323,8 @@ public static partial class Networking
         protected virtual void AddNewPeer(Peer peer)
         {
             Peers.Add(peer);
+            if(peer.IsAdmin)
+                _admin = peer;
             OnPeerAdded(peer);
         }
 
