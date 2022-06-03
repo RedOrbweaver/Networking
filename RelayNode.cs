@@ -239,7 +239,6 @@ public static partial class Networking
                 EndPoint endpoint = new IPEndPoint(_listenEnd.Address, _listenEnd.Port);
                 int received = _socket.ReceiveFrom(buf, SocketFlags.None, ref endpoint);
                 byte[] dt = buf.Take(received).ToArray();
-                Console.WriteLine($"({_debugID})Received messsage");
                 _receiveQueue.Enqueue(((IPEndPoint)endpoint, dt));
                 _receiveEvent.Set();
             }
@@ -282,9 +281,7 @@ public static partial class Networking
                     RelayMessage? message = null;
                     try
                     {
-                        message = DeserializeStruct<RelayMessage>(received.data);
-                        Console.WriteLine($"ReceiverID: {message.Value.ReceiverID}");
-                        Console.WriteLine($"SenderID: {message.Value.SenderID}\n");
+                        message = DeserializeStruct<RelayMessage>(received.data);;
                     }
                     catch(DeserializationFailedException)
                     {

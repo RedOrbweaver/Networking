@@ -415,6 +415,10 @@ public static partial class Networking
                         TimeReceived = DateTime.Now,
                         Message=rawmsg,
                     };
+                    Console.WriteLine($"Received message from {rm.Sender.ID} to {this.ID}");
+                    Console.WriteLine($"ID: {id}");
+                    Console.WriteLine($"Type: {rawmsg.GetType().Name}");
+                    Console.WriteLine("");
                     CheckSubs(id, rm, peer);
                 }
             }
